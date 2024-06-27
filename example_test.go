@@ -48,14 +48,14 @@ func ExampleGroup() {
 	}
 
 	f3 := func() {
-		// update data to server
+		// upload data to server
 	}
 
 	var g Group
 	g.Go(f1)
 	g.GoTk(f2, time.Second) // use default FuncInfo
 	g.GoTkWithFuncInfo(f3, time.Second, FuncInfo{
-		FuncName:    "updateData",
+		FuncName:    "uploadData",
 		File:        "example_test.go",
 		Line:        50,
 		Description: "update data to server",
