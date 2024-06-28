@@ -48,10 +48,10 @@ func ExampleGroup() {
 	//2 GoInfos
 	//==1==
 	//FuncInfo: func main.syncData in file main.go: 38
-	//ExitTime: 2024-06-28 21:23:39.171416
+	//StartTime: 2024-06-28 21:23:29.170927, ExitTime: 2024-06-28 21:23:39.171416
 	//==2==
 	//FuncInfo: func main.runTcpServer in file main.go: 21
-	//ExitTime: 2024-06-28 21:23:39.179450
+	//StartTime: 2024-06-28 21:23:29.170927, ExitTime: 2024-06-28 21:23:39.179450
 
 	var g2 Group // default use context.Background() as root ctx.
 	g2.Go(runTcpServer)
@@ -61,7 +61,7 @@ func ExampleGroup() {
 		File:        "example_test.go",
 		Line:        107,
 		Description: "update data to server",
-	}) // use custom FuncInfo
+	})        // use custom FuncInfo
 	g2.Wait() // if panic in syncData, g2 will be canceled; if runTcpServer exit or panic,  g2 will be canceled
 }
 
@@ -96,13 +96,13 @@ func ExampleNewAndGo() {
 	//3 GoInfos
 	//==1==
 	//FuncInfo: func github.com/xiaotushaoxia/gogroup.Test_example.func2 in file /src/gogroup/example_test.go: 116
-	//ExitTime: 2024-06-27 00:00:00.215397
+	//StartTime: 2024-06-27 00:00:00.214867, ExitTime: 2024-06-27 00:00:00.215397
 	//==2==
 	//FuncInfo: func github.com/xiaotushaoxia/gogroup.Test_example.func3 in file /src/gogroup/example_test.go: 121
-	//ExitTime: 2024-06-27 00:00:00.215397
+	//StartTime: 2024-06-27 00:00:00.214867, ExitTime: 2024-06-27 00:00:00.215397
 	//==3==
 	//FuncInfo: func github.com/xiaotushaoxia/gogroup.Test_example.func1 in file /src/gogroup/example_test.go: 104
-	//ExitTime: 2024-06-27 00:00:00.216698
+	//StartTime: 2024-06-27 00:00:00.214867, ExitTime: 2024-06-27 00:00:00.216698
 }
 
 func runTcpServer(ctx context.Context) {

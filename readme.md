@@ -98,10 +98,10 @@ func main() {
 	//2 GoExitInfos
 	//==1==
 	//FuncInfo: func main.syncData in file main.go:47
-	//ExitTime: 2024-06-28 21:23:39.171416
+	//StartTime: 2024-06-28 21:23:29.170927, ExitTime: 2024-06-28 21:23:39.171416
 	//==2==
 	//FuncInfo: func main.runTcpServer in file main.go:34
-	//ExitTime: 2024-06-28 21:23:39.179450
+	//StartTime: 2024-06-28 21:23:29.170927, ExitTime: 2024-06-28 21:23:39.179450
 }
 
 func runTcpServer(ctx context.Context) {
