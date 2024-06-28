@@ -16,8 +16,6 @@ const (
 	cancelFlagCancelByUser         int32 = 1
 	cancelFlagCancelByRootContext  int32 = 2
 	cancelFlagCancelBySubGoroutine int32 = 3
-
-	microsecondDate = time.DateTime + ".000000"
 )
 
 func New(ctx context.Context) *Group {
@@ -34,7 +32,7 @@ type Group struct {
 	state atomic.Int32
 
 	exitsM sync.Mutex
-	exits  []GoExitInfo
+	exits  []GoInfo
 
 	cancelAt   atomic.Value // time.Time
 	cancelFlag atomic.Int32 // init:0,cancel by user 1;cancel by sub goroutine:2; cancel by root ctx: 3
@@ -57,9 +55,6 @@ func (g *Group) GoTk(f func(), d time.Duration) {
 	g.goWithFuncInfo(toTkFunc(f, d), ParserFuncInfo(f))
 }
 
-// GoWithFuncInfo
-// default FuncInfo has `FuncName File Line`
-// use `fi` to support add Description for FuncInfo. and after wrapped, `FuncName File Line` is not original anymore
 func (g *Group) GoWithFuncInfo(f func(context.Context), fi FuncInfo) {
 	g.init()
 	g.goWithFuncInfo(f, fi)
@@ -69,51 +64,40 @@ func (g *Group) GoTkWithFuncInfo(f func(), d time.Duration, fi FuncInfo) {
 	g.goWithFuncInfo(toTkFunc(f, d), fi)
 }
 
-func (g *Group) CancelAndWait(err error) {
-	g.init()
-	g.cancelByCanceler(err, cancelFlagCancelByUser)
-	<-g.Watch().Done()
-}
-
 func (g *Group) Cancel(err error) {
 	g.init()
 	g.cancelByCanceler(err, cancelFlagCancelByUser)
 }
 
+func (g *Group) Watch() context.Context {
+	g.init()
+	return g.watch()
+}
+
 func (g *Group) Wait() {
 	g.init()
-	<-g.Watch().Done()
+	<-g.watch().Done()
+}
+
+func (g *Group) CancelAndWait(err error) {
+	g.init()
+	g.cancelByCanceler(err, cancelFlagCancelByUser)
+	<-g.watch().Done()
 }
 
 // Err return the error who cause ctx cancel
 func (g *Group) Err() error {
 	g.init()
+	<-g.watch().Done()
 	return context.Cause(g.ctx)
 }
 
 func (g *Group) ExitInfo() *ExitInfo {
 	g.init()
-	if g.state.Load() != groupStateExited {
-		return nil
-	}
-	a, ok := g.cancelAt.Load().(time.Time)
-	if !ok { // should not happen
-		return nil
-	}
-	ft, ok := g.firstGoTime.Load().(time.Time)
-	if !ok { // should not happen
-		return nil
-	}
-	et, ok := g.exitTime.Load().(time.Time)
-	if !ok { // should not happen
-		return nil
-	}
+	<-g.watch().Done()
 	v := &ExitInfo{
-		CancelTime:   a,
 		FirstUseTime: g.firstUseTime,
-		ExitTime:     et,
-		FirstGoTime:  ft,
-		Cause:        g.Err(),
+		Cause:        context.Cause(g.ctx),
 		FirstUseLine: g.firstUseLine,
 	}
 	switch g.cancelFlag.Load() {
@@ -125,8 +109,21 @@ func (g *Group) ExitInfo() *ExitInfo {
 		v.CancelBySubGoroutine = true
 	}
 	g.exitsM.Lock()
-	v.GoExitInfos = append(make([]GoExitInfo, 0, len(g.exits)), g.exits...)
+	v.GoInfos = append(make([]GoInfo, 0, len(g.exits)), g.exits...)
 	g.exitsM.Unlock()
+	ct, ok := g.cancelAt.Load().(time.Time)
+	if !ok {
+		return v
+	}
+	ft, ok := g.firstGoTime.Load().(time.Time)
+	if !ok {
+		return v
+	}
+	et, ok := g.exitTime.Load().(time.Time)
+	if !ok {
+		return v
+	}
+	v.CancelTime, v.FirstGoTime, v.ExitTime = &ct, &ft, &et
 	return v
 }
 
@@ -149,12 +146,13 @@ func (g *Group) goWithFuncInfo(f func(context.Context), fi FuncInfo) {
 	g.panicIfExited()
 	g.watchRootContext()
 	g.state.CompareAndSwap(groupStateInit, groupStateRunning)
+	now := time.Now()
 	if g.firstGoTime.Load() == nil {
-		g.firstGoTime.CompareAndSwap(nil, time.Now())
+		g.firstGoTime.CompareAndSwap(nil, now)
 	}
 	g.wg.Add(1)
 	go func() {
-		defer g.handleExit(fi)
+		defer g.handleExit(fi, now)
 		f(g.ctx)
 	}()
 }
@@ -173,20 +171,19 @@ func (g *Group) watchRootContext() {
 			select {
 			case <-g.root.Done():
 			case <-g.ctx.Done():
-				if g.root.Err() == nil {
+				if isContextDone(g.root) { // select is random, so maybe root is Done too
 					return
 				}
 			}
-			if g.cancelFlag.CompareAndSwap(cancelFlagInit, cancelFlagCancelByRootContext) {
-				g.cancelAt.CompareAndSwap(nil, time.Now())
-			}
+			g.cancelByCanceler(g.root.Err(), cancelFlagCancelByRootContext)
 		}()
 	})
 }
 
-func (g *Group) handleExit(fi FuncInfo) {
+func (g *Group) handleExit(fi FuncInfo, start time.Time) {
 	p := recover()
 	ei, err := getGoExitInfo(fi, p)
+	ei.StartTime = start
 	g.exitsM.Lock()
 	g.exits = append(g.exits, ei)
 	// cancel must be protected by exitsM. otherwise g may be canceled by other ei
@@ -196,17 +193,22 @@ func (g *Group) handleExit(fi FuncInfo) {
 }
 
 func (g *Group) cancelByCanceler(err error, canceler int32) *Group {
-	if g.cancelFlag.CompareAndSwap(cancelFlagInit, canceler) {
-		g.cancelAt.CompareAndSwap(nil, time.Now())
-		g.cancelCause(err)
+	// sometime sub goroutine exit very fast, make `watchRootContext` goroutine can't set cancelFlag
+	// so if root is Done, don't set cancelFlag = canceler
+	if canceler == cancelFlagCancelByRootContext || !isContextDone(g.root) {
+		if g.cancelFlag.CompareAndSwap(cancelFlagInit, canceler) {
+			g.cancelAt.CompareAndSwap(nil, time.Now())
+			g.cancelCause(err)
+		}
 	}
 	return g
 }
 
 // NewAndGo
 // args should be func(ctx) or func(),time.Duration. like f1(ctx),f2(),1s,f3(ctx),f4(),500ms
+// will not block
 func NewAndGo(ctx context.Context, args ...any) GoGroup {
 	group := New(ctx)
-	groupRunArgs(group, args...)
+	groupGoArgs(group, args...)
 	return group
 }

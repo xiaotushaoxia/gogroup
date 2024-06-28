@@ -1,46 +1,43 @@
 package gogroup
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-func Test_stack(t *testing.T) {
-	a := bufio.NewReader(bytes.NewReader([]byte("12345")))
-
-	fmt.Println(a.ReadLine())
-
-}
-
 func TestParserFuncInfo(t *testing.T) {
 	_ff := ff
-	fmt.Println(ParserFuncInfo(_ff).String())
-}
+	fi := ParserFuncInfo(_ff)
+	if !strings.HasSuffix(fi.FuncName, ".ff") {
+		t.Fatal("FuncName not ff")
+	}
 
-func Test_loop(t *testing.T) {
-	for i := 0; i < 10; i++ {
-		fmt.Println(i)
-		i++
+	if fi.Line != 88 {
+		t.Fatal("Line not 88")
 	}
 }
 
 func Test_parserGoroutineInStack(t *testing.T) {
 	a := []byte(" goroutine 9 [running]:")
-	fmt.Println(parserGoroutineInStack(a))
+	if parserGoroutineInStack(a) != "goroutine 9" {
+		t.Fatal("not goroutine 9")
+	}
 
 	a = []byte("   goroutine 9 [running]:")
-	fmt.Println(parserGoroutineInStack(a))
+	if parserGoroutineInStack(a) != "goroutine 9" {
+		t.Fatal("not goroutine 9")
+	}
 
 	a = []byte("   goroutine 9111 [running]:")
-	fmt.Println(parserGoroutineInStack(a))
+	if parserGoroutineInStack(a) != "goroutine 9111" {
+		t.Fatal("not goroutine 9111")
+	}
 }
 
 func Test_wait(t *testing.T) {
-
 	var wg sync.WaitGroup
 
 	wg.Add(1)
@@ -65,7 +62,44 @@ func Test_wait(t *testing.T) {
 	wg.Wait()
 }
 
-func Test_recover(t *testing.T) {
-	p := recover()
-	fmt.Println(p)
+func Test_stack(t *testing.T) {
+	bs := stack(4)
+	lines := bytes2lines(bs)
+	if len(lines) != 3 {
+		t.Fatal("stack size error. 3")
+	}
+
+	bs = stack(0)
+	lines = bytes2lines(bs)
+	if len(lines) != 11 {
+		t.Fatal("stack size error. 11")
+	}
+
+	bs = stack(5)
+	lines = bytes2lines(bs)
+	if len(lines) != 11 {
+		t.Fatal("stack size error. 11")
+	}
+
+	bs = stack(100)
+	lines = bytes2lines(bs)
+	if len(lines) != 11 {
+		t.Fatal("stack size error. 11")
+	}
+
+	bs = stack(2)
+	lines = bytes2lines(bs)
+	if len(lines) != 7 {
+		t.Fatal("stack size error. 7")
+	}
+}
+
+func Test_parserGoroutineInStackFail(t *testing.T) {
+	if parserGoroutineInStack([]byte("abc")) != "" {
+		t.Fatal("abc not empty")
+	}
+
+	if parserGoroutineInStack([]byte("goroutine xxxx")) != "" {
+		t.Fatal("abc not empty")
+	}
 }

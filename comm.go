@@ -3,33 +3,78 @@ package gogroup
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-// GoGroup
-// manages some goroutines.
-// when one of them exits, the other goroutines will be canceled (ensure that you're listening to `context.Done()`)
+const microsecondDate = time.DateTime + ".000000"
+
+// GoGroup manages some goroutines.
+// When one of them exits, the other will be canceled (ensure that you're listening to `ctx.Done()`)
 type GoGroup interface {
+	// Go start a goroutine in GoGroup
+	// usually a continuously running service, such as an HTTP server
 	Go(func(context.Context))
-	GoTk(func(), time.Duration)
-	GoWithFuncInfo(func(context.Context), FuncInfo)
+
+	// GoTk start a goroutine in GoGroup to exec tk every d
+	// tkf don't need ctx, I want the execution of tkf cannot be interrupted.
+	// it is syntactic sugar of Go(func(context.Context)).
+	// same as:
+	// 	tkf, d := func() {}, time.Second
+	//	g.Go(func(ctx context.Context) {
+	//		ticker := time.NewTicker(d)
+	//		defer ticker.Stop()
+	//		done := ctx.Done()
+	//		for {
+	//			select {
+	//			case <-done:
+	//				return
+	//			case <-ticker.C:
+	//				select {
+	//				case <-done:
+	//					return
+	//				default:
+	//					tkf()
+	//				}
+	//			}
+	//		}
+	//	})
+	GoTk(tkf func(), d time.Duration)
+
+	// GoWithFuncInfo
+	// same as Go, but with custom FuncInfo
+	// default FuncInfo has File, FuncName and Line
+	// Description filed of FuncInfo can be filled in by the user.
+	// if f is wrapped, it will lose the actual File, FuncName and Line, so we need custom FuncInfo
+	GoWithFuncInfo(f func(context.Context), fi FuncInfo)
+
+	// GoTkWithFuncInfo
+	// same as GoTk, but with custom FuncInfo
 	GoTkWithFuncInfo(func(), time.Duration, FuncInfo)
-	CancelAndWait(error)
-	Cancel(err error)
-	Watch() context.Context
-	Wait()
-	Err() error
+
+	Cancel(error) // cancel ctx of GoGroup. Note: GoGroup won't exit immediately
+
+	Watch() context.Context // return a ctx who will be canceled when GoGroup exit
+	Wait()                  // same as <-Watch().Done(), but uninterrupted
+	CancelAndWait(error)    // syntactic sugar, same as Cancel(err);Wait()
+	Err() error             // the error who cause GoGroup exited
 	ExitInfo() *ExitInfo
+
+	// I refer to the 5 functions Watch, Wait, CancelAndWait, Err, and ExitInfo collectively as f5.
+	// call Go will panic("group is exited") after f5 called
+	// f5 will block until GoGroup exited
 }
 
-type GoExitInfo struct {
+type GoInfo struct {
 	FuncInfo   FuncInfo
 	Panic      any
 	PanicStack []byte
-	Time       time.Time
+	ExitTime   time.Time
+	StartTime  time.Time
 }
 
 type FuncInfo struct {
@@ -40,22 +85,19 @@ type FuncInfo struct {
 }
 
 type ExitInfo struct {
-	CancelTime           time.Time
-	GoExitInfos          []GoExitInfo
+	GoInfos              []GoInfo
 	CancelByUser         bool
 	CancelByRootContext  bool
 	CancelBySubGoroutine bool
 	Cause                error
 	FirstUseLine         string
 	FirstUseTime         time.Time
-	FirstGoTime          time.Time
-	ExitTime             time.Time
+	CancelTime           *time.Time // maybe nil
+	FirstGoTime          *time.Time // maybe nil
+	ExitTime             *time.Time // maybe nil
 }
 
-func (ei *ExitInfo) String() string {
-	if ei == nil {
-		return "ExitInfo<nil>"
-	}
+func (ei ExitInfo) String() string {
 	var builder strings.Builder
 	builder.WriteString("====Group ExitInfo====\n")
 	if ei.FirstUseLine != "" {
@@ -65,57 +107,81 @@ func (ei *ExitInfo) String() string {
 		builder.WriteString(ei.FirstUseLine)
 		builder.WriteByte('\n')
 	}
-	if !ei.FirstGoTime.IsZero() {
-		builder.WriteString(fmt.Sprintf("FirstGoTime: %s\n", ei.FirstGoTime.Format(microsecondDate)))
+	if ei.FirstGoTime != nil {
+		builder.WriteString("FirstGoTime: ")
+		builder.WriteString(ei.FirstGoTime.Format(microsecondDate))
+		builder.WriteByte('\n')
 	}
-	if !ei.CancelTime.IsZero() {
-		builder.WriteString(fmt.Sprintf("Cause: %v\nCancelTime: %s, ExitTime: %s, ", ei.Cause, ei.CancelTime.Format(microsecondDate), ei.ExitTime.Format(microsecondDate)))
-		if ei.CancelByUser {
-			builder.WriteString("CancelByUser\n")
-		} else if ei.CancelBySubGoroutine {
-			builder.WriteString("CancelBySubGoroutine\n")
-		} else if ei.CancelByRootContext {
-			builder.WriteString("CancelByRootContext\n")
-		} else {
-			builder.WriteString("UnknownCanceler\n")
-		}
+	if ei.Cause == nil {
+		builder.WriteString("Cause: <nil> (unexpected: call ExitInfo() before Go?)")
 	} else {
-		builder.WriteString(fmt.Sprintf("Cause: %v", ei.Cause))
+		builder.WriteString("Cause: " + ei.Cause.Error())
 	}
-	if len(ei.GoExitInfos) == 0 {
-		builder.WriteString("No GoExitInfo\n")
+	builder.WriteByte('\n')
+	if ei.CancelTime != nil {
+		builder.WriteString("CancelTime: ")
+		builder.WriteString(ei.CancelTime.Format(microsecondDate))
+		if ei.ExitTime != nil {
+			builder.WriteString(", ExitTime: ")
+			builder.WriteString(ei.ExitTime.Format(microsecondDate))
+		}
+		if ei.CancelByUser {
+			builder.WriteString(", CancelByUser\n")
+		} else if ei.CancelBySubGoroutine {
+			builder.WriteString(", CancelBySubGoroutine\n")
+		} else if ei.CancelByRootContext {
+			builder.WriteString(", CancelByRootContext\n")
+		} else {
+			builder.WriteString(", UnknownCanceler\n")
+		}
+	}
+	if len(ei.GoInfos) == 0 {
+		builder.WriteString("No GoInfo\n")
 		return builder.String()
 	}
-	if len(ei.GoExitInfos) == 1 {
-		builder.WriteString("1 GoExitInfo\n")
+	if len(ei.GoInfos) == 1 {
+		builder.WriteString("1 GoInfo\n")
 	} else {
-		builder.WriteString(fmt.Sprintf("%d GoExitInfos\n", len(ei.GoExitInfos)))
+		builder.WriteString(strconv.Itoa(len(ei.GoInfos)) + " GoInfos\n")
 	}
-	for i, gei := range ei.GoExitInfos {
-		builder.WriteString(fmt.Sprintf("==%d==\n", i+1))
-		builder.WriteString("FuncInfo: " + gei.FuncInfo.String())
+	for i, gei := range ei.GoInfos {
+		builder.WriteString("==")
+		builder.WriteString(strconv.Itoa(i + 1))
+		builder.WriteString("==\n")
+		builder.WriteString("FuncInfo: ")
+		builder.WriteString(gei.FuncInfo.String())
 		builder.WriteByte('\n')
-		builder.WriteString("ExitTime: " + gei.Time.Format(microsecondDate))
+		builder.WriteString("StartTime: ")
+		builder.WriteString(gei.StartTime.Format(microsecondDate))
+		builder.WriteString(", ExitTime: ")
+		builder.WriteString(gei.ExitTime.Format(microsecondDate))
 		builder.WriteByte('\n')
 		if gei.Panic == nil {
 			continue
 		}
 		builder.WriteString(fmt.Sprintf("Panic: %v\n", gei.Panic))
 		builder.WriteString("PanicStack: ")
-		builder.WriteString(string(gei.PanicStack))
+		if gei.PanicStack[len(gei.PanicStack)-1] == '\n' {
+			builder.Write(gei.PanicStack[:len(gei.PanicStack)-1])
+		} else {
+			builder.Write(gei.PanicStack)
+		}
+		if i < len(ei.GoInfos)-1 {
+			builder.WriteByte('\n')
+		}
 	}
 	return builder.String()
 }
 
 func (fi FuncInfo) String() string {
 	var sb strings.Builder
-	sb.Grow(len(fi.FuncName) + len(fi.File) + len(fi.Description) + 16)
+	sb.Grow(len(fi.FuncName) + len(fi.File) + len(fi.Description) + 17)
 	sb.WriteString("func ")
 	sb.WriteString(fi.FuncName)
 
 	sb.WriteString(" in file ")
 	sb.WriteString(fi.File)
-	sb.WriteString(": ")
+	sb.WriteString(":")
 	sb.WriteString(strconv.Itoa(fi.Line))
 	if fi.Description != "" {
 		sb.WriteByte('(')
@@ -133,7 +199,7 @@ type watcher struct {
 }
 
 // Watch return a context who be canceled when group exit
-func (w *watcher) Watch() context.Context {
+func (w *watcher) watch() context.Context {
 	w.watchOnce.Do(func() {
 		watchCtx, cancel := context.WithCancel(context.Background())
 		go func() {
@@ -163,7 +229,7 @@ func (g *groupBase) initBase() {
 	g.ctx, g.cancelCause = context.WithCancelCause(g.root)
 }
 
-func groupRunArgs(group GoGroup, args ...any) {
+func groupGoArgs(group GoGroup, args ...any) {
 	for i := 0; i < len(args)-1; i++ {
 		v0 := args[i]
 		switch ff := v0.(type) {
@@ -181,5 +247,32 @@ func groupRunArgs(group GoGroup, args ...any) {
 	if last, ok := args[len(args)-1].(func(context.Context)); ok {
 		group.Go(last)
 	}
-	group.Wait()
+	//group.Wait()  // not block default, up to the caller
+}
+
+func UnwrapMultiError(err error) (errors []error) {
+	if err == nil {
+		return nil
+	}
+	if i, ok := err.(interface{ Unwrap() []error }); ok {
+		return i.Unwrap()
+	}
+	if i, ok := err.(interface{ WrappedErrors() []error }); ok {
+		return i.WrappedErrors()
+	}
+	if i, ok := err.(interface{ Errors() []error }); ok {
+		return i.Errors()
+	}
+	return []error{err}
+}
+
+func ParserFuncInfo(f any) FuncInfo {
+	pf := reflect.ValueOf(f).Pointer()
+	funcForPC := runtime.FuncForPC(pf)
+	file, line := funcForPC.FileLine(pf)
+	return FuncInfo{
+		FuncName: funcForPC.Name(),
+		File:     file,
+		Line:     line,
+	}
 }

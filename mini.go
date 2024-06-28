@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,6 +17,7 @@ func NewMini(ctx context.Context) *MiniGroup {
 type MiniGroup struct {
 	groupBase
 	watcher
+	exited atomic.Bool
 }
 
 func (g *MiniGroup) Go(f func(ctx context.Context)) {
@@ -41,7 +43,17 @@ func (g *MiniGroup) GoWithFuncInfo(f func(context.Context), fi FuncInfo) {
 func (g *MiniGroup) CancelAndWait(err error) {
 	g.init()
 	g.cancelCause(err)
-	<-g.Watch().Done()
+	<-g.watch().Done()
+}
+
+func (g *MiniGroup) Watch() context.Context {
+	g.init()
+	return g.watch()
+}
+
+func (g *MiniGroup) Wait() {
+	g.init()
+	<-g.watch().Done()
 }
 
 func (g *MiniGroup) Cancel(err error) {
@@ -51,31 +63,32 @@ func (g *MiniGroup) Cancel(err error) {
 
 func (g *MiniGroup) Err() error {
 	g.init()
+	<-g.watch().Done()
 	return context.Cause(g.ctx)
-}
-
-func (g *MiniGroup) Wait() {
-	g.init()
-	<-g.Watch().Done()
 }
 
 func (g *MiniGroup) ExitInfo() *ExitInfo {
 	g.init()
-	select {
-	case <-g.Watch().Done():
-		return &ExitInfo{Cause: g.Err()}
-	default:
-		return nil
-	}
+	<-g.watch().Done()
+	return &ExitInfo{Cause: context.Cause(g.ctx)}
 }
 
 func (g *MiniGroup) init() {
 	g.initOnce.Do(func() {
 		g.initBase()
+		g.waitFunc = g.waitAndSetExit
 	})
 }
 
+func (g *MiniGroup) waitAndSetExit() {
+	g.wg.Wait()
+	g.exited.Store(true)
+}
+
 func (g *MiniGroup) goWithFuncInfo(f func(context.Context), fi FuncInfo) {
+	if g.exited.Load() {
+		panic("group is exited")
+	}
 	g.wg.Add(1)
 	go func() {
 		defer g.handleExit(fi)
@@ -97,8 +110,9 @@ func (g *MiniGroup) handleExit(fi FuncInfo) {
 
 // NewMiniAndGo
 // args should be func(ctx) or func(),time.Duration. like f1(ctx),f2(),1s,f3(ctx),f4(),500ms
+// will not block
 func NewMiniAndGo(ctx context.Context, args ...any) GoGroup {
 	group := NewMini(ctx)
-	groupRunArgs(group, args...)
+	groupGoArgs(group, args...)
 	return group
 }

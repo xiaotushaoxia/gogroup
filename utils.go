@@ -7,15 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
 	"runtime"
 	"runtime/debug"
 	"time"
 )
 
-// stack returns a formatted stack trace, skipping the most recent 'skip' calls
+// stack returns a formatted stack trace of the goroutine that calls it, skipping the most recent 'skip' calls
 //
-//	 example:
+// skip	example:
+//
 //		stack: goroutine 50 [running]:
 //	1	runtime/debug.Stack()
 //	1	        xxxxxxxxxxx/src/runtime/debug/stack.go:24 +0x5e
@@ -35,7 +35,7 @@ import (
 //	8	        xxxxxxxxxxx/utils.go:451 +0xc5
 func stack(n int) []byte {
 	lines := bytes2lines(debug.Stack())
-	if n == 0 || len(lines) <= n*2+1 { // 如果skip太多反而一条都不跳过
+	if n == 0 || len(lines) <= n*2+1 { // if n is too large. not skip
 		return bytes.Join(lines, []byte{})
 	}
 	lines = append([][]byte{lines[0]}, lines[2*n+1:]...)
@@ -73,30 +73,20 @@ func toTkFunc(f func(), d time.Duration) func(context.Context) {
 	return func(ctx context.Context) {
 		tk := time.NewTicker(d)
 		defer tk.Stop()
+		done := ctx.Done()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-done:
 				return
 			default: // if f cost longer than d, may not exit forever
 				select {
-				case <-ctx.Done():
+				case <-done:
 					return
 				case <-tk.C:
 					f()
 				}
 			}
 		}
-	}
-}
-
-func ParserFuncInfo(f any) FuncInfo {
-	pf := reflect.ValueOf(f).Pointer()
-	funcForPC := runtime.FuncForPC(pf)
-	file, line := funcForPC.FileLine(pf)
-	return FuncInfo{
-		FuncName: funcForPC.Name(),
-		File:     file,
-		Line:     line,
 	}
 }
 
@@ -108,15 +98,15 @@ func parserGoroutineInStack(bs []byte) string {
 	}
 	bs2 := bs[indexAny+len(flag):]
 	indexByte := bytes.IndexByte(bs2, ' ')
-	if indexAny == -1 {
+	if indexByte == -1 {
 		return ""
 	}
 	return flag + string(bs2[:indexByte])
 }
 
-func getGoExitInfo(fi FuncInfo, panicValue any) (GoExitInfo, error) {
+func getGoExitInfo(fi FuncInfo, panicValue any) (GoInfo, error) {
 	var tail string
-	ei := GoExitInfo{FuncInfo: fi, Time: time.Now()}
+	ei := GoInfo{FuncInfo: fi, ExitTime: time.Now()}
 	if panicValue != nil {
 		st := stack(5)
 		gid := parserGoroutineInStack(st)
@@ -128,18 +118,11 @@ func getGoExitInfo(fi FuncInfo, panicValue any) (GoExitInfo, error) {
 	return ei, errors.New(fi.String() + ": " + tail)
 }
 
-func UnwrapMultiError(err error) (errors []error) {
-	if err == nil {
-		return nil
+func isContextDone(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	default:
+		return false
 	}
-	if i, ok := err.(interface{ Unwrap() []error }); ok {
-		return i.Unwrap()
-	}
-	if i, ok := err.(interface{ WrappedErrors() []error }); ok {
-		return i.WrappedErrors()
-	}
-	if i, ok := err.(interface{ Errors() []error }); ok {
-		return i.Errors()
-	}
-	return []error{err}
 }
