@@ -48,7 +48,7 @@ type GoGroup interface {
 	// GoWithFuncInfo
 	// same as Go, but with custom FuncInfo
 	// default FuncInfo has File, FuncName and Line
-	// Description filed of FuncInfo can be filled in by the user.
+	// Description field of FuncInfo can be filled in by the user.
 	// if f is wrapped, it will lose the actual File, FuncName and Line, so we need custom FuncInfo
 	GoWithFuncInfo(f func(context.Context), fi FuncInfo)
 
