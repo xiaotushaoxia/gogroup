@@ -17,6 +17,7 @@ type GoGroup interface {
     // Go start a goroutine in GoGroup
     // usually a continuously running service, such as an HTTP server
     Go(func(context.Context))
+	
     // GoTk start a goroutine in GoGroup to exec tk every d
     // tkf don't need ctx, I want the execution of tkf cannot be interrupted.
     // it is syntactic sugar of Go(func(context.Context)).
